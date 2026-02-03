@@ -14,6 +14,7 @@ from ZMQ_Bridge.telegram_notifier import TelegramNotifier
 import traceback
 import subprocess
 from AI_Brain.analyst import VirtualAnalyst
+from AI_Brain.training_pipeline import train_rl_mode
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO, 
@@ -115,7 +116,7 @@ async def execute_mt5_order(symbol, action, volume, sl=0.0, tp=0.0, notifier=Non
             # Warning: result.order is Order Ticket, not Position Ticket. 
             # In Netting Account: Position Ticket usually == Order Ticket of first deal.
             # In Hedging: Position Ticket == Order Ticket.
-            await db.log_trade_entry(symbol, action, volume, result.price, signal_data)
+            await db.log_trade_entry(symbol, action, volume, result.price, signal_data, ticket=result.order)
             
         return result
     except Exception as e:
@@ -294,6 +295,7 @@ async def run_trading_engine():
             "equity": account.equity if account else 10000.0,
             "balance": account.balance if account else 10000.0
         },
+        "last_rl_order_count": 0,
         "main_menu": notifier.get_main_menu()
     }
 
@@ -350,55 +352,54 @@ async def run_trading_engine():
                 logger.error("Database health check failed.")
 
     async def retraining_worker():
-        """Retrains the model every 2 hours using the training_pipeline.py script"""
+        """Retrains the model every 200 closed orders using the trade logic"""
+        # Initialize last count on startup to avoid immediate retraining
+        state["last_rl_order_count"] = await db.count_closed_trades()
+        logger.info(f"Retraining worker started. initial closed trades: {state['last_rl_order_count']}")
+        
         while True:
-            await asyncio.sleep(7200) # 2 Hours
-            logger.info("🕒 Starting scheduled auto-retraining...")
+            await asyncio.sleep(600) # Check every 10 minutes
+            
             try:
-                # Run training pipeline as a subprocess
-                process = await asyncio.create_subprocess_exec(
-                    "python", "AI_Brain/training_pipeline.py",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                stdout, stderr = await process.communicate()
+                current_closed = await db.count_closed_trades()
+                new_trades = current_closed - state["last_rl_order_count"]
                 
-                if process.returncode == 0:
-                    logger.info("✅ Auto-retraining complete. Reloading weights...")
-                    # Reload weights into the existing models
-                    cnn.load_state_dict(torch.load("AI_Brain/weights/cnn_model.pt", map_location='cpu'))
-                    lstm.load_state_dict(torch.load("AI_Brain/weights/lstm_model.pt", map_location='cpu'))
-                    logger.info("♻️ System updated with new AI weights.")
+                if new_trades >= 200:
+                    logger.info(f"🕒 RL Trigger: {new_trades} new trades detected. Starting RL retraining...")
+                    await notifier.send_message(f"🧠 **RL Retraining Started**\n\nLearning from {new_trades} new trade results...")
                     
-                    # Run backtest to evaluate new weights
-                    logger.info("📊 Running backtest on updated model...")
-                    backtest_process = await asyncio.create_subprocess_exec(
-                        "python", "-c",
-                        "from AI_Brain.training_pipeline import run_backtest_only; run_backtest_only()",
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=os.getcwd()
-                    )
-                    bt_stdout, bt_stderr = await backtest_process.communicate()
+                    # 1. Fetch Training Data from DB
+                    experiences = await db.get_rl_training_data(limit=500) # Get recent 500
                     
-                    if backtest_process.returncode == 0:
-                        logger.info("✅ Backtest complete. Results logged to AI_Brain/performance_log.txt")
+                    if experiences:
+                        # 2. Run RL Training (In a separate thread to keep bot responsive)
+                        await asyncio.to_thread(train_rl_mode, experiences)
                         
-                        # Read last backtest result and send to Telegram
+                        # 3. Reload weights and update state
+                        cnn.load_state_dict(torch.load("AI_Brain/weights/cnn_model.pt", map_location='cpu'))
+                        lstm.load_state_dict(torch.load("AI_Brain/weights/lstm_model.pt", map_location='cpu'))
+                        state["last_rl_order_count"] = current_closed
+                        
+                        logger.info("♻️ System updated with new RL weights.")
+                        
+                        # 4. Optional: Run backtest and notify
+                        backtest_process = await asyncio.create_subprocess_exec(
+                            "python", "-c",
+                            "from AI_Brain.training_pipeline import run_backtest_only; run_backtest_only()",
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            cwd=os.getcwd()
+                        )
+                        await backtest_process.communicate()
+                        
                         try:
                             with open("AI_Brain/performance_log.txt", 'r', encoding='utf-8') as f:
                                 lines = f.readlines()
-                                # Get last report (last 12 lines approximately)
                                 recent_report = ''.join(lines[-12:]) if len(lines) >= 12 else ''.join(lines)
-                                await notifier.send_message(f"♻️ **Model Updated & Backtested**\n\n```\n{recent_report}\n```")
+                                await notifier.send_message(f"🧠 **RL Learning Complete**\nModel refined based on real profit/loss data.\n\n```\n{recent_report}\n```")
                         except Exception as e:
                             logger.error(f"Failed to read backtest log: {e}")
-                            await notifier.send_message("♻️ **System Updated**: บอทได้รับการเรียนรู้ข้อมูลใหม่และอัปเกรดตัวเองเสร็จสมบูรณ์!")
-                    else:
-                        logger.error(f"❌ Backtest failed: {bt_stderr.decode()}")
-                        await notifier.send_message("⚠️ **Model Updated** แต่ Backtest ล้มเหลว กรุณาตรวจสอบ Log")
-                else:
-                    logger.error(f"❌ Retraining failed: {stderr.decode()}")
+                            await notifier.send_message("🧠 **RL Learning Complete**: บอทเรียนรู้จากผลกำไรขาดทุนล่าสุดเรียบร้อยครับ!")
             except Exception as e:
                 logger.error(f"⚠️ Retraining Exception: {e}")
 

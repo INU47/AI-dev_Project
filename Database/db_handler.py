@@ -131,7 +131,7 @@ class DBHandler:
         except Exception as e:
             logger.error(f"Failed to log candle batch: {e}")
 
-    async def log_trade_entry(self, symbol, action, lot_size, price, signal_data):
+    async def log_trade_entry(self, symbol, action, lot_size, price, signal_data, ticket=0):
         """
         Logs the OPENING of a trade. 
         Returns the database ID of the log entry to be used for closing later.
@@ -141,8 +141,8 @@ class DBHandler:
             query = """
                 INSERT INTO trade_logs (
                     open_time, symbol, action, open_price, lot_size,
-                    ai_mode, pattern_type, cnn_confidence, lstm_trend_pred, lstm_confidence, status
-                ) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, 'OPEN')
+                    ai_mode, pattern_type, cnn_confidence, lstm_trend_pred, lstm_confidence, status, ticket
+                ) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, 'OPEN', $10)
                 RETURNING id
             """
             
@@ -161,7 +161,8 @@ class DBHandler:
                                           str(raw_pattern),
                                           float(signal_data.get('confidence', 0.0)),
                                           float(raw_trend),
-                                          float(raw_conf))
+                                          float(raw_conf),
+                                          int(ticket))
                 return row['id'] if row else None
         except Exception as e:
             logger.error(f"Failed to log trade entry: {e}")
@@ -207,12 +208,71 @@ class DBHandler:
     async def get_recent_signals(self, limit=5):
         if not self.pool: return []
         try:
-            query = "SELECT time, symbol, final_signal, cnn_confidence FROM ai_signals ORDER BY time DESC LIMIT $1"
+            # Migration: ai_signals -> trade_logs
+            query = """
+                SELECT open_time as time, symbol, action as final_signal, cnn_confidence 
+                FROM trade_logs 
+                ORDER BY open_time DESC LIMIT $1
+            """
             async with self.pool.acquire() as conn:
                 rows = await conn.fetch(query, limit)
                 return rows
         except Exception as e:
             logger.error(f"Failed to fetch recent signals: {e}")
+            return []
+
+    async def count_closed_trades(self):
+        """Returns the total number of CLOSED trades in the system."""
+        if not self.pool: return 0
+        try:
+            async with self.pool.acquire() as conn:
+                count = await conn.fetchval("SELECT COUNT(*) FROM trade_logs WHERE status = 'CLOSED'")
+                return count
+        except Exception as e:
+            logger.error(f"Failed to count closed trades: {e}")
+            return 0
+
+    async def get_rl_training_data(self, limit=1000, window_size=32):
+        """
+        Fetches CLOSED trades and reconstructs the State (last 32 candles) for each.
+        Returns: list of dicts { 'state': candles, 'action': 1 or 2, 'reward': net_profit }
+        """
+        if not self.pool: return []
+        try:
+            experiences = []
+            async with self.pool.acquire() as conn:
+                # 1. Get closed trades
+                trades = await conn.fetch("""
+                    SELECT id, symbol, action, open_time, net_profit 
+                    FROM trade_logs 
+                    WHERE status = 'CLOSED' 
+                    ORDER BY open_time DESC LIMIT $1
+                """, limit)
+                
+                for t in trades:
+                    # 2. Reconstruct State: Get last 32 candles before open_time
+                    # We pick M1 timeframe for state reconstruction as it's the primary signal source
+                    candles = await conn.fetch("""
+                        SELECT open, high, low, close, volume as tick_volume
+                        FROM market_candles
+                        WHERE symbol = $1 AND timeframe = 'M1' AND time < $2
+                        ORDER BY time DESC LIMIT $3
+                    """, t['symbol'], t['open_time'], window_size)
+                    
+                    if len(candles) == window_size:
+                        # Reverse list to get chronological order (Oldest to Newest)
+                        state_candles = [dict(c) for c in reversed(candles)]
+                        experiences.append({
+                            'symbol': t['symbol'],
+                            'action': 1 if t['action'] == 'BUY' else 2,
+                            'reward': float(t['net_profit'] or 0.0),
+                            'state': state_candles
+                        })
+            
+            logger.info(f"Reconstructed {len(experiences)} RL experiences from DB.")
+            return experiences
+        except Exception as e:
+            logger.error(f"Failed to fetch RL training data: {e}")
             return []
 
     async def close(self):

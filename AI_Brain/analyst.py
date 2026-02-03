@@ -1,18 +1,18 @@
-import google.generativeai as genai
+from google import genai
 import logging
 import json
 
 logger = logging.getLogger("VirtualAnalyst")
 
 class VirtualAnalyst:
-    def __init__(self, api_key, model_name="gemini-pro"):
+    def __init__(self, api_key, model_name="gemini-1.5-flash"):
         if not api_key:
             logger.error("Gemini API Key missing!")
-            self.model = None
+            self.client = None
             return
             
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(model_name)
+        self.client = genai.Client(api_key=api_key)
+        self.model_name = model_name
         logger.info(f"Virtual Analyst Initialized with model: {model_name}")
 
     async def generate_report(self, signal_data, mode="telegram"):
@@ -20,7 +20,7 @@ class VirtualAnalyst:
         Generates a technical analysis report.
         mode: "telegram" (concise) or "dashboard" (trader log style)
         """
-        if not self.model:
+        if not self.client:
             return "⚠️ [Analyst Offline] ไม่สามารถสร้างบทวิเคราะห์ได้ในขณะนี้"
 
         if mode == "dashboard":
@@ -67,10 +67,11 @@ class VirtualAnalyst:
             """
 
         try:
-            # Note: The google-generativeai library's async support might vary, 
-            # using sync call in a thread or direct if supported. 
-            # For simplicity in this environment, we'll use generate_content.
-            response = self.model.generate_content(prompt)
+            # google-genai SDK uses client.models.generate_content
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
             return response.text
         except Exception as e:
             err_msg = str(e)

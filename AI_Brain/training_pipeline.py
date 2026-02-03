@@ -9,8 +9,12 @@ import json
 import logging
 import MetaTrader5 as mt5
 from datetime import datetime
-from preprocessor import GAFTransformer
-from models import PatternCNN, TrendLSTM
+try:
+    from preprocessor import GAFTransformer
+    from models import PatternCNN, TrendLSTM
+except ImportError:
+    from AI_Brain.preprocessor import GAFTransformer
+    from AI_Brain.models import PatternCNN, TrendLSTM
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -382,7 +386,107 @@ def run_backtest_only():
     backtester = Backtester(initial_balance=10000)
     backtester.run_backtest(cnn, lstm, None, val_dataset)
 
+# --- RL Training Classes ---
+class RLExperienceDataset(Dataset):
+    def __init__(self, experiences, window_size=32):
+        self.experiences = experiences
+        self.window_size = window_size
+        self.gaf_transformer = GAFTransformer(image_size=window_size)
+        
+    def __len__(self):
+        return len(self.experiences)
+        
+    def __getitem__(self, idx):
+        exp = self.experiences[idx]
+        # state is list of 32 candles
+        df_state = pd.DataFrame(exp['state'])
+        
+        # GAF Image
+        gaf_img = self.gaf_transformer.transform(df_state['close'].values)
+        
+        # Seq (OHLCV)
+        window_feat = df_state[['open', 'high', 'low', 'close', 'tick_volume']].values
+        min_vals = window_feat.min(axis=0)
+        max_vals = window_feat.max(axis=0)
+        range_vals = max_vals - min_vals
+        range_vals[range_vals == 0] = 1.0
+        seq = (window_feat - min_vals) / range_vals
+        
+        return (
+            torch.tensor(gaf_img, dtype=torch.float32).unsqueeze(0),
+            torch.tensor(seq, dtype=torch.float32),
+            torch.tensor(exp['action'], dtype=torch.long),
+            torch.tensor(exp['reward'], dtype=torch.float32)
+        )
+
+def train_rl_mode(experiences, epochs=10, lr=0.0001):
+    """
+    Reinforcement Learning update based on actual trade outcomes.
+    Uses Policy Gradient: Loss = -log(prob(action)) * reward
+    """
+    if not experiences:
+        logger.warning("No experiences for RL training.")
+        return
+
+    logger.info(f"Starting RL Training session with {len(experiences)} samples...")
+    
+    WINDOW_SIZE = 32
+    BATCH_SIZE = 16
+    
+    dataset = RLExperienceDataset(experiences, window_size=WINDOW_SIZE)
+    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+    
+    cnn = PatternCNN()
+    lstm = TrendLSTM(input_size=5, hidden_size=64, dropout=0.3)
+    
+    # Load current weights if available
+    try:
+        cnn.load_state_dict(torch.load("AI_Brain/weights/cnn_model.pt"))
+        lstm.load_state_dict(torch.load("AI_Brain/weights/lstm_model.pt"))
+        logger.info("Loaded previous weights for RL refinement.")
+    except:
+        logger.warning("No existing weights found. Starting RL from scratch.")
+        
+    optimizer_cnn = optim.Adam(cnn.parameters(), lr=lr)
+    optimizer_lstm = optim.Adam(lstm.parameters(), lr=lr)
+    
+    cnn.train(); lstm.train()
+    
+    for epoch in range(epochs):
+        epoch_loss = 0
+        for gaf, seq, action, reward in loader:
+            optimizer_cnn.zero_grad()
+            optimizer_lstm.zero_grad()
+            
+            # 1. Forward Pass
+            logits = cnn(gaf)
+            probs = torch.softmax(logits, dim=1)
+            
+            # 2. Select prob of the action taken
+            # action is 1 (BUY) or 2 (SELL)
+            m = torch.distributions.Categorical(probs)
+            log_prob = m.log_prob(action)
+            
+            # 3. Policy Gradient Loss (Maximizing expected reward)
+            # Standard: minimize -log_prob * reward
+            # Scale reward to be more stable (e.g. normalize or clamp)
+            norm_reward = reward / 10.0 # Small scale
+            loss = - (log_prob * norm_reward).mean()
+            
+            loss.backward()
+            optimizer_cnn.step()
+            optimizer_lstm.step()
+            
+            epoch_loss += loss.item()
+            
+        logger.info(f"RL Epoch {epoch+1}/{epochs} | Loss: {epoch_loss/len(loader):.6f}")
+
+    # Save upgraded weights
+    if not os.path.exists("AI_Brain/weights"): os.makedirs("AI_Brain/weights")
+    torch.save(cnn.state_dict(), "AI_Brain/weights/cnn_model.pt")
+    torch.save(lstm.state_dict(), "AI_Brain/weights/lstm_model.pt")
+    logger.info("RL Training Complete. Weights updated.")
+
 if __name__ == "__main__":
-    # Uncomment the mode you want
     # train_and_backtest() 
     run_backtest_only()
