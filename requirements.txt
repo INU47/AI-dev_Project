@@ -1,0 +1,26 @@
+# Connectivity
+pyzmq==25.1.1
+MetaTrader5==5.0.45
+
+# Data Manipulation & Math
+numpy==1.26.0
+pandas==2.1.1
+scipy==1.11.3
+
+# AI & Machine Learning
+# Using TensorFlow or PyTorch (defaulting to PyTorch for flexibility with LSTM/CNN)
+torch==2.1.0
+torchvision==0.16.0
+scikit-learn==1.3.1
+scikit-image==0.22.0  # For GAF transformation
+
+# Database
+psycopg2-binary==2.9.9
+asyncpg==0.28.0  # For async DB operations
+
+# Config & Utilities
+pyyaml==6.0.1
+python-dotenv==1.0.0
+
+# Visualization (for verification)
+matplotlib==3.8.0

@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Vision Dashboard | Hybrid Quant</title>
+    <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        :root {
+            --bg-color: #0d1117;
+            --panel-color: #161b22;
+            --text-color: #c9d1d9;
+            --accent-color: #58a6ff;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        header {
+            background-color: var(--panel-color);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #30363d;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+        }
+
+        .logo {
+            font-size: 1.5rem;
+            font-weight: 800;
+            background: linear-gradient(90deg, #58a6ff, #bc8cff);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.9rem;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            background-color: #3fb950;
+            border-radius: 50%;
+            box-shadow: 0 0 8px #3fb950;
+        }
+
+        main {
+            flex: 1;
+            display: flex;
+            padding: 1rem;
+            gap: 1rem;
+        }
+
+        #chart-container {
+            flex: 1;
+            background-color: var(--panel-color);
+            border-radius: 12px;
+            border: 1px solid #30363d;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .controls {
+            width: 300px;
+            background-color: var(--panel-color);
+            border-radius: 12px;
+            border: 1px solid #30363d;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .card {
+            background-color: #0d1117;
+            padding: 1rem;
+            border-radius: 8px;
+            border: 1px solid #21262d;
+        }
+
+        .card h3 {
+            margin: 0 0 0.5rem 0;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            color: #8b949e;
+        }
+
+        .card p {
+            margin: 0;
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+
+        #detections-list {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .detection-item {
+            padding: 0.5rem;
+            border-bottom: 1px solid #21262d;
+            font-size: 0.85rem;
+        }
+
+        .detection-label {
+            color: var(--accent-color);
+            font-weight: bold;
+        }
+
+        .controls-group {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        select {
+            background-color: var(--panel-color);
+            color: var(--text-color);
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 0.5rem 1rem;
+            font-size: 0.9rem;
+            cursor: pointer;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        select:hover {
+            border-color: var(--accent-color);
+        }
+
+        select:focus {
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <div class="logo">QUANT AI VISION</div>
+        <div class="controls-group">
+            <select id="symbol-selector">
+                <option value="EURUSD">EURUSD</option>
+                <option value="GBPUSD">GBPUSD</option>
+                <option value="USDJPY">USDJPY</option>
+                <option value="XAUUSD">XAUUSD</option>
+            </select>
+            <select id="timeframe-selector">
+                <option value="M1">M1 (1 Minute)</option>
+                <option value="M5">M5 (5 Minutes)</option>
+                <option value="H1">H1 (1 Hour)</option>
+            </select>
+        </div>
+        <div class="status">
+            <div id="ws-status" class="status-dot"></div>
+            <span id="symbol-display">EURUSD (M1)</span>
+        </div>
+    </header>
+
+    <main>
+        <div id="chart-container"></div>
+
+        <div class="controls">
+            <div class="card">
+                <h3>Latest Price</h3>
+                <p id="price-display">0.00000</p>
+            </div>
+            <div class="card">
+                <h3>AI Signal</h3>
+                <p id="signal-display">WAITING...</p>
+            </div>
+
+            <div class="card" style="flex: 1; display: flex; flex-direction: column;">
+                <h3>🧠 AI Pattern Analysis</h3>
+                <div id="pattern-analysis"
+                    style="font-size: 0.85rem; line-height: 1.5; color: #c9d1d9; overflow-y: auto;">
+                    <p style="color: #8b949e;">Waiting for signal...</p>
+                </div>
+            </div>
+
+            <div class="card" style="flex: 1; display: flex; flex-direction: column;">
+                <h3>Real-time Detections</h3>
+                <div id="detections-list"></div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        if (typeof LightweightCharts === 'undefined') {
+            alert("Error: TradingView library failed to load. Please check your internet connection.");
+            console.error("LightweightCharts is not defined!");
+        }
+
+        const chartElement = document.getElementById('chart-container');
+        const chart = LightweightCharts.createChart(chartElement, {
+            width: chartElement.clientWidth,
+            height: chartElement.clientHeight,
+            layout: {
+                backgroundColor: '#161b22',
+                textColor: '#c9d1d9',
+            },
+            grid: {
+                vertLines: { color: '#21262d' },
+                horzLines: { color: '#21262d' },
+            },
+            crosshair: {
+                mode: LightweightCharts.CrosshairMode.Normal,
+            },
+            rightPriceScale: {
+                borderColor: '#30363d',
+            },
+            timeScale: {
+                borderColor: '#30363d',
+                timeVisible: true,
+                secondsVisible: false,
+                fixRightEdge: true,
+                rightOffset: 0,
+                shiftVisibleRangeOnNewBar: true,
+            },
+        });
+
+        const candleSeries = chart.addCandlestickSeries({
+            upColor: '#26a69a',
+            downColor: '#ef5350',
+            borderVisible: false,
+            wickUpColor: '#26a69a',
+            wickDownColor: '#ef5350',
+        });
+
+        const areaSeries = chart.addAreaSeries({
+            lineColor: 'rgba(88, 166, 255, 0.5)',
+            topColor: 'rgba(88, 166, 255, 0.2)',
+            bottomColor: 'rgba(88, 166, 255, 0)',
+            lineWidth: 1,
+        });
+
+        // Resize chart on window resize
+        window.addEventListener('resize', () => {
+            chart.resize(chartElement.clientWidth, chartElement.clientHeight);
+        });
+
+        // State management for current selection
+        let currentSymbol = 'EURUSD';
+        let currentTimeframe = 'M1';
+        let allData = {}; // Store all candles by symbol_timeframe key
+
+        // Update chart based on current selection
+        function updateChartView() {
+            const key = `${currentSymbol}_${currentTimeframe}`;
+            const data = allData[key] || [];
+
+            if (data.length > 0) {
+                try {
+                    candleSeries.setData(data);
+                    const last = data[data.length - 1];
+                    document.getElementById('price-display').innerText = last.close.toFixed(5);
+                } catch (e) {
+                    console.error("Error updating chart:", e);
+                }
+            }
+
+            document.getElementById('symbol-display').innerText = `${currentSymbol} (${currentTimeframe})`;
+        }
+
+        // Symbol selector event
+        document.getElementById('symbol-selector').addEventListener('change', (e) => {
+            currentSymbol = e.target.value;
+            updateChartView();
+        });
+
+        // Timeframe selector event
+        document.getElementById('timeframe-selector').addEventListener('change', (e) => {
+            currentTimeframe = e.target.value;
+            updateChartView();
+        });
+
+        // Handle WebSockets
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+        ws.onopen = () => {
+            console.log("WebSocket Connected!");
+            document.getElementById('ws-status').style.backgroundColor = '#3fb950';
+            document.getElementById('ws-status').style.boxShadow = '0 0 8px #3fb950';
+        };
+
+        ws.onclose = () => {
+            console.log("WebSocket Disconnected!");
+            document.getElementById('ws-status').style.backgroundColor = '#ef5350';
+            document.getElementById('ws-status').style.boxShadow = '0 0 8px #ef5350';
+        };
+
+        ws.onerror = (err) => {
+            console.error("WebSocket Error:", err);
+        };
+
+        ws.onmessage = (event) => {
+            console.log("Data Received:", event.data.substring(0, 100));
+            const msg = JSON.parse(event.data);
+
+            if (msg.type === 'history') {
+                console.log("Processing history binary data...");
+                const historyData = msg.data;
+                const markers = [];
+
+                // Group candles by symbol_timeframe
+                const candlesByKey = {};
+
+                historyData.forEach(item => {
+                    if (item.type === 'candle' && item.time && item.close != null) {
+                        const symbol = item.symbol || 'EURUSD';
+                        const tf = item.timeframe || 'M1';
+                        const key = `${symbol}_${tf}`;
+
+                        if (!candlesByKey[key]) candlesByKey[key] = [];
+
+                        candlesByKey[key].push({
+                            time: item.time,
+                            open: parseFloat(item.open),
+                            high: parseFloat(item.high),
+                            low: parseFloat(item.low),
+                            close: parseFloat(item.close),
+                        });
+                    } else if (item.type === 'signal' && item.time) {
+                        markers.push({
+                            time: item.time,
+                            position: item.action === 'BUY' ? 'belowBar' : 'aboveBar',
+                            color: item.action === 'BUY' ? '#26a69a' : '#ef5350',
+                            shape: item.action === 'BUY' ? 'arrowUp' : 'arrowDown',
+                            text: `AI: ${item.action}`,
+                        });
+                    }
+                });
+
+                // Process and store each symbol_timeframe
+                for (const [key, rawCandles] of Object.entries(candlesByKey)) {
+                    rawCandles.sort((a, b) => a.time - b.time);
+                    const candles = [];
+                    const seenTimes = new Set();
+
+                    rawCandles.forEach(c => {
+                        if (!seenTimes.has(c.time)) {
+                            candles.push(c);
+                            seenTimes.add(c.time);
+                        }
+                    });
+
+                    allData[key] = candles;
+                }
+
+                // Update chart with current selection
+                updateChartView();
+                if (markers.length > 0) candleSeries.setMarkers(markers);
+                return;
+            }
+
+            const data = msg;
+            if (data.type === 'tick' || data.type === 'candle') {
+                const symbol = data.symbol || 'EURUSD';
+                const tf = data.timeframe || 'M1';
+                const key = `${symbol}_${tf}`;
+
+                const candle = {
+                    time: data.time,
+                    open: data.open,
+                    high: data.high,
+                    low: data.low,
+                    close: data.close,
+                };
+
+                // Store in allData
+                if (!allData[key]) allData[key] = [];
+
+                // Update or append
+                const existing = allData[key].find(c => c.time === candle.time);
+                if (existing) {
+                    Object.assign(existing, candle);
+                } else {
+                    allData[key].push(candle);
+                }
+
+                // Only update chart if this matches current selection
+                if (symbol === currentSymbol && tf === currentTimeframe) {
+                    candleSeries.update(candle);
+                    document.getElementById('price-display').innerText = data.close.toFixed(5);
+                    document.getElementById('symbol-display').innerText = `${symbol} (${tf})`;
+                }
+            }
+
+            if (data.type === 'signal') {
+                document.getElementById('signal-display').innerText = data.action;
+                document.getElementById('signal-display').style.color =
+                    data.action === 'BUY' ? '#26a69a' : (data.action === 'SELL' ? '#ef5350' : '#c9d1d9');
+
+                // Display LLM Pattern Analysis
+                if (data.analysis) {
+                    const analysisPanel = document.getElementById('pattern-analysis');
+                    analysisPanel.innerHTML = `
+                        <div style="padding: 0.5rem; background: rgba(88, 166, 255, 0.1); border-left: 3px solid #58a6ff; border-radius: 4px;">
+                            <div style="font-size: 0.75rem; color: #8b949e; margin-bottom: 0.5rem;">
+                                ${data.symbol} • ${new Date(data.time * 1000).toLocaleTimeString()}
+                            </div>
+                            <div style="white-space: pre-wrap;">${data.analysis}</div>
+                        </div>
+                    `;
+                }
+
+                // Add marker to chart
+                const markers = candleSeries.getMarkers() || [];
+                markers.push({
+                    time: data.time,
+                    position: data.action === 'BUY' ? 'belowBar' : 'aboveBar',
+                    color: data.action === 'BUY' ? '#26a69a' : '#ef5350',
+                    shape: data.action === 'BUY' ? 'arrowUp' : 'arrowDown',
+                    text: `AI: ${data.action} (${(data.confidence * 100).toFixed(0)}%)`,
+                });
+                candleSeries.setMarkers(markers);
+            }
+
+            if (data.type === 'detection') {
+                // YOLO style overlay logic
+                // data: { type: 'detection', label: 'Double Top', start_time: ts, end_time: ts, price_high: val, price_low: val }
+
+                const list = document.getElementById('detections-list');
+                const item = document.createElement('div');
+                item.className = 'detection-item';
+                item.innerHTML = `<span class="detection-label">${data.label}</span> at ${new Date(data.time * 1000).toLocaleTimeString()}`;
+                list.prepend(item);
+
+                if (list.children.length > 10) list.removeChild(list.lastChild);
+            }
+        };
+    </script>
+</body>
+
+</html>
