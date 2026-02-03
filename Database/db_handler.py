@@ -65,53 +65,144 @@ class DBHandler:
         except Exception as e:
             logger.error(f"Failed to initialize schema: {e}")
 
-    async def log_market_data(self, symbol, bid, ask, volume):
+    async def log_candle(self, symbol, timeframe, candle_data):
         if not self.pool: return
         try:
             query = """
-                INSERT INTO market_data (time, symbol, bid, ask, volume)
-                VALUES (NOW(), $1, $2, $3, $4)
+                INSERT INTO market_candles (time, symbol, timeframe, open, high, low, close, volume)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (time, symbol, timeframe) DO NOTHING
             """
-            async with self.pool.acquire() as conn:
-                await conn.execute(query, symbol, bid, ask, volume)
-        except Exception as e:
-            logger.error(f"Failed to log market data: {e}")
-
-    async def log_signal(self, symbol, signal_data):
-        if not self.pool: return
-        try:
-            query = """
-                INSERT INTO ai_signals (time, symbol, pattern_type, cnn_confidence, lstm_trend_pred, lstm_confidence, final_signal)
-                VALUES (NOW(), $1, $2, $3, $4, $5, $6)
-            """
-            
-            # Extract raw model data (available even in Exploration Mode)
-            # Priorities: raw_cnn_class > pattern (text)
-            # Priorities: raw_lstm_trend > trend
-            
-            raw_pattern = signal_data.get('raw_cnn_class')
-            if raw_pattern is None: 
-                # Fallback mapping if only text is available (less accurate)
-                raw_pattern = 0 # Default/Unknown
-            
-            raw_trend = signal_data.get('raw_lstm_trend')
-            if raw_trend is None:
-                raw_trend = signal_data.get('trend', 0.0) # Fallback
-                
-            raw_conf = signal_data.get('raw_lstm_conf')
-            if raw_conf is None:
-                raw_conf = 0.0
+            # Convert time from ms integer if needed, or assume datetime object if pre-processed
+            # In native polling, candle['time'] is int (msc). Convert to datetime.
+            if isinstance(candle_data['time'], (int, float)):
+                ts = datetime.fromtimestamp(candle_data['time']/1000.0)
+            else:
+                ts = candle_data['time']
 
             async with self.pool.acquire() as conn:
                 await conn.execute(query, 
+                                   ts, 
                                    symbol, 
-                                   int(raw_pattern) if raw_pattern is not None else 0,
-                                   float(signal_data.get('confidence', 0.0)),
-                                   float(raw_trend),
-                                   float(raw_conf),
-                                   signal_data.get('action'))
+                                   timeframe,
+                                   float(candle_data['open']), 
+                                   float(candle_data['high']),
+                                   float(candle_data['low']), 
+                                   float(candle_data['close']),
+                                   float(candle_data.get('volume', candle_data.get('tick_volume', 0)) if isinstance(candle_data, dict) else 0))
         except Exception as e:
-            logger.error(f"Failed to log signal: {e}")
+            logger.error(f"Failed to log candle: {e}")
+
+    async def log_candles_batch(self, candles_list):
+        """
+        Efficiently logs a batch of candles.
+        candles_list: List of dicts with keys: symbol, timeframe, time, open, high, low, close, tick_volume
+        """
+        if not self.pool or not candles_list: return
+        try:
+            query = """
+                INSERT INTO market_candles (time, symbol, timeframe, open, high, low, close, volume)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (time, symbol, timeframe) DO NOTHING
+            """
+            
+            data_tuples = []
+            for c in candles_list:
+                # Convert time
+                if isinstance(c['time'], (int, float)):
+                    ts = datetime.fromtimestamp(c['time']/1000.0)
+                else:
+                    ts = c['time']
+                
+                data_tuples.append((
+                    ts,
+                    c['symbol'],
+                    c['timeframe'],
+                    float(c['open']),
+                    float(c['high']),
+                    float(c['low']),
+                    float(c['close']),
+                    float(c.get('tick_volume', c.get('volume', 0)))
+                ))
+
+            async with self.pool.acquire() as conn:
+                await conn.executemany(query, data_tuples)
+            logger.info(f"Batch logged {len(data_tuples)} candles.")
+        except Exception as e:
+            logger.error(f"Failed to log candle batch: {e}")
+
+    async def log_trade_entry(self, symbol, action, lot_size, price, signal_data):
+        """
+        Logs the OPENING of a trade. 
+        Returns the database ID of the log entry to be used for closing later.
+        """
+        if not self.pool: return None
+        try:
+            query = """
+                INSERT INTO trade_logs (
+                    open_time, symbol, action, open_price, lot_size,
+                    ai_mode, pattern_type, cnn_confidence, lstm_trend_pred, lstm_confidence, status
+                ) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, 'OPEN')
+                RETURNING id
+            """
+            
+            # Extract AI State
+            raw_pattern = signal_data.get('raw_cnn_class', 0)
+            raw_trend = signal_data.get('raw_lstm_trend', 0.0)
+            raw_conf = signal_data.get('raw_lstm_conf', 0.0)
+            
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(query, 
+                                          symbol, 
+                                          action, 
+                                          float(price), 
+                                          float(lot_size),
+                                          "CONSERVATIVE", # Or pass from signal_data
+                                          str(raw_pattern),
+                                          float(signal_data.get('confidence', 0.0)),
+                                          float(raw_trend),
+                                          float(raw_conf))
+                return row['id'] if row else None
+        except Exception as e:
+            logger.error(f"Failed to log trade entry: {e}")
+            return None
+
+    async def log_trade_exit(self, db_id, close_price, profit, net_profit):
+        """Updates the trade log with CLOSE details"""
+        if not self.pool or not db_id: return
+        try:
+            query = """
+                UPDATE trade_logs 
+                SET close_time = NOW(), 
+                    close_price = $1, 
+                    gross_profit = $2, 
+                    net_profit = $3, 
+                    status = 'CLOSED'
+                WHERE id = $4
+            """
+            async with self.pool.acquire() as conn:
+                await conn.execute(query, float(close_price), float(profit), float(net_profit), db_id)
+        except Exception as e:
+            logger.error(f"Failed to log trade exit: {e}")
+
+    async def close_latest_trade(self, symbol, close_price, profit, net_profit):
+        """Closes the latest OPEN trade for a symbol (FIFO logic for RL logging)"""
+        if not self.pool: return
+        try:
+            # Find the latest OPEN trade for this symbol
+            find_query = """
+                SELECT id FROM trade_logs 
+                WHERE symbol = $1 AND status = 'OPEN' 
+                ORDER BY open_time DESC LIMIT 1
+            """
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(find_query, symbol)
+                if row:
+                    await self.log_trade_exit(row['id'], close_price, profit, net_profit)
+                else:
+                    logger.warning(f"No OPEN trade found to close for {symbol}")
+        except Exception as e:
+            logger.error(f"Failed to close latest trade: {e}")
 
     async def get_recent_signals(self, limit=5):
         if not self.pool: return []

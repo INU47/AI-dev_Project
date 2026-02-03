@@ -76,8 +76,8 @@ async def push_data(data: list | dict = Body(...)):
     else:
         logger.debug(f"Received single push: {data.get('type')}")
         
-        # Store single item if it's a candle or signal
-        if data.get("type") in ["candle", "tick"]:
+        # Store single item if it's a candle
+        if data.get("type") == "candle":
             symbol = data.get("symbol", "EURUSD")
             tf = data.get("timeframe", "M1")
             key = f"{symbol}_{tf}"
@@ -85,48 +85,12 @@ async def push_data(data: list | dict = Body(...)):
             if key not in manager.history:
                 manager.history[key] = []
                 
-            # For ticks, we might not want to store every single one in history 
-            # or we treat them as live updates. Assuming candles are main history.
-            if data.get("type") == "candle":
-                manager.history[key].append(data)
-                if len(manager.history[key]) > 1000:
-                    manager.history[key] = manager.history[key][-1000:]
+            manager.history[key].append(data)
+            if len(manager.history[key]) > 1000:
+                manager.history[key] = manager.history[key][-1000:]
         
-        # If signal has pattern metadata, generate LLM analysis
-        if data.get('type') == 'signal' and data.get('pattern'):
-            try:
-                from AI_Brain.analyst import VirtualAnalyst
-                import os
-                
-                # Load API key
-                config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Config', 'server_config.json')
-                if os.path.exists(config_path):
-                    with open(config_path, 'r') as f:
-                        config = json.load(f)
-                    
-                    analyst = VirtualAnalyst(config.get('gemini_api_key'), model_name='gemini-1.5-flash')
-                    
-                    # Generate pattern analysis
-                    analyst_payload = {
-                        'symbol': data.get('symbol'),
-                        'action': data.get('action'),
-                        'pattern': data.get('pattern'),
-                        'confidence': data.get('confidence'),
-                        'future_outlook': data.get('future_outlook'),
-                        'price': data.get('price')
-                    }
-                    
-                    # This is sync, but we'll run it quickly
-                    import asyncio
-                    loop = asyncio.get_event_loop()
-                    analysis = await analyst.generate_report(analyst_payload)
-                    
-                    # Add analysis to signal data
-                    data['analysis'] = analysis
-                    logger.info(f"Generated LLM analysis for {data.get('symbol')} {data.get('action')}")
-            except Exception as e:
-                logger.error(f"Failed to generate LLM analysis: {e}")
-                data['analysis'] = "⚠️ Pattern analysis unavailable"
+        # NOTE: Main engine now handles LLM analysis generation and sends it with the signal.
+        # Server just relays the 'analysis' field if present.
         
         await manager.broadcast(json.dumps(data))
     return {"status": "ok"}

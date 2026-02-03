@@ -59,6 +59,12 @@ class DecisionEngine:
             is_uptrend = m1['trend'] > 0
             future_outlook = "ขาขึ้นแข็งแกร่ง" if is_uptrend else "แนวโน้มขาลง"
             
+            # Calculate Synthetic LSTM Confidence
+            # Assumption: Trend is now scaled to Points (e.g. 10.0 = 1 Pip)
+            # We treat > 50 points (5 pips) as "High Confidence" (1.0)
+            trend_val = m1['trend']
+            lstm_conf = min(abs(trend_val) / 50.0, 1.0)
+            
             analyst_data = {
                 'pattern': pattern_text,
                 'future_outlook': future_outlook,
@@ -74,7 +80,7 @@ class DecisionEngine:
                 'analyst_metadata': analyst_data,
                 'raw_cnn_class': m1['class'],  # Pass to DB
                 'raw_lstm_trend': m1['trend'],
-                'raw_lstm_conf': m1['trend'] # Using trend value as conf proxy for simpler DB logging
+                'raw_lstm_conf': lstm_conf # Now using calculated confidence
             }
 
         if m1:
@@ -95,7 +101,7 @@ class DecisionEngine:
                 if not (m5 and h1): return signal
                 bull_confirmed = (m5['trend'] > 0 and h1['trend'] > 0)
                 bear_confirmed = (m5['trend'] < 0 and h1['trend'] < 0)
-                min_conf = 0.55
+                min_conf = 0.65
 
             # Generate Report Components
             pattern_text = pattern_names.get(m1['class'], "Unknown")
@@ -110,24 +116,37 @@ class DecisionEngine:
                 'is_uptrend': is_uptrend,
                 'confidence': m1['conf']
             }
+            
+            # Helper for LSTM Confidence
+            trend_val = m1['trend']
+            lstm_conf = min(abs(trend_val) / 50.0, 1.0)
 
             if is_bullish and bull_confirmed and m1['conf'] >= min_conf:
                 signal = {
                     'action': 'BUY', 
                     'confidence': m1['conf'], 
                     'reason': f'MTF Bullish {ai_mode}',
-                    'analyst_metadata': analyst_data
+                    'analyst_metadata': analyst_data,
+                    'raw_cnn_class': m1['class'],  
+                    'raw_lstm_trend': m1['trend'],
+                    'raw_lstm_conf': lstm_conf 
                 }
             elif is_bearish and bear_confirmed and m1['conf'] >= min_conf:
                 signal = {
                     'action': 'SELL', 
                     'confidence': m1['conf'], 
                     'reason': f'MTF Bearish {ai_mode}',
-                    'analyst_metadata': analyst_data
+                    'analyst_metadata': analyst_data,
+                    'raw_cnn_class': m1['class'],  
+                    'raw_lstm_trend': m1['trend'],
+                    'raw_lstm_conf': lstm_conf 
                 }
             else:
                 # Capture pattern detections even if no trade action is taken
                 signal['analyst_metadata'] = analyst_data
+                signal['raw_cnn_class'] = m1['class']
+                signal['raw_lstm_trend'] = m1['trend']
+                signal['raw_lstm_conf'] = lstm_conf
                 
         return signal
 

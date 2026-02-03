@@ -1,29 +1,53 @@
 -- Database Schema for Quant Trading System
+-- Optimized for Reinforcement Learning (RL)
 
--- 1. Create Tables
-CREATE TABLE IF NOT EXISTS market_data (
+-- 1. Drop Old Tables (As requested)
+DROP TABLE IF EXISTS market_candles;
+
+-- 2. Create Tables
+
+-- Table: market_candles (Stores OHLCV for M1, M5, H1)
+CREATE TABLE IF NOT EXISTS market_candles (
     time TIMESTAMPTZ NOT NULL,
     symbol TEXT NOT NULL,
-    bid DOUBLE PRECISION NOT NULL,
-    ask DOUBLE PRECISION NOT NULL,
-    volume DOUBLE PRECISION NOT NULL
+    timeframe TEXT NOT NULL, -- 'M1', 'M5', 'H1'
+    open DOUBLE PRECISION NOT NULL,
+    high DOUBLE PRECISION NOT NULL,
+    low DOUBLE PRECISION NOT NULL,
+    close DOUBLE PRECISION NOT NULL,
+    volume DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (time, symbol, timeframe)
 );
 
-CREATE TABLE IF NOT EXISTS ai_signals (
-    time TIMESTAMPTZ NOT NULL,
+-- Table: trade_logs (Full Trade Lifecycle with Model State)
+CREATE TABLE IF NOT EXISTS trade_logs (
+    id SERIAL PRIMARY KEY,
+    ticket BIGINT, -- MT5 Ticket ID
     symbol TEXT NOT NULL,
-    pattern_type TEXT,
+    action TEXT NOT NULL, -- 'BUY' or 'SELL'
+    
+    -- Entry Details
+    open_time TIMESTAMPTZ NOT NULL,
+    open_price DOUBLE PRECISION NOT NULL,
+    lot_size DOUBLE PRECISION NOT NULL,
+    
+    -- Exit Details (Nullable until closed)
+    close_time TIMESTAMPTZ,
+    close_price DOUBLE PRECISION,
+    gross_profit DOUBLE PRECISION, -- Raw Profit from MT5
+    net_profit DOUBLE PRECISION,   -- After Swap/Comm
+    
+    -- AI State at Entry (The "Observation" & "Policy" for RL)
+    ai_mode TEXT,
+    pattern_type TEXT, -- CNN Class Name
     cnn_confidence DOUBLE PRECISION,
     lstm_trend_pred DOUBLE PRECISION,
     lstm_confidence DOUBLE PRECISION,
-    final_signal TEXT
+    
+    -- Status
+    status TEXT DEFAULT 'OPEN' -- 'OPEN', 'CLOSED'
 );
 
--- 2. Optional: Create Indexes for performance
-CREATE INDEX IF NOT EXISTS idx_market_data_time ON market_data (time DESC);
-CREATE INDEX IF NOT EXISTS idx_ai_signals_time ON ai_signals (time DESC);
-
--- 3. Note for TimescaleDB users:
--- If you have TimescaleDB extension installed, you can turn these into hypertables:
--- SELECT create_hypertable('market_data', 'time');
--- SELECT create_hypertable('ai_signals', 'time');
+-- 3. Indexes for Performance
+CREATE INDEX IF NOT EXISTS idx_candles_time ON market_candles (time DESC);
+CREATE INDEX IF NOT EXISTS idx_trades_curr ON trade_logs (symbol, status);

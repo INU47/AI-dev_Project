@@ -1,5 +1,4 @@
 # Connectivity
-pyzmq==25.1.1
 MetaTrader5==5.0.45
 
 # Data Manipulation & Math

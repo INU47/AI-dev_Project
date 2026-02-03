@@ -9,6 +9,7 @@ class CandleAggregator:
     def __init__(self, timeframe_seconds=3600): # Default H1
         self.tf_seconds = timeframe_seconds
         self.current_candle = None
+        self.last_closed_candle = None # Store for retrieval
         
     def add_tick(self, tick_data):
         """
@@ -30,6 +31,7 @@ class CandleAggregator:
         elif candle_start_time > self.current_candle['time']:
             # Close previous
             completed_candle = self.current_candle.copy()
+            self.last_closed_candle = completed_candle # Stored
             # Start new
             self._init_candle(candle_start_time, price)
         else:
@@ -53,6 +55,9 @@ class CandleAggregator:
     
     def get_current_candle(self):
         return self.current_candle
+
+    def get_last_closed_candle(self):
+        return self.last_closed_candle
 
 class SlidingWindowBuffer:
     def __init__(self, window_size=32, features=['open', 'high', 'low', 'close', 'tick_volume']):

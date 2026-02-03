@@ -135,12 +135,17 @@ class QuantDataset(Dataset):
             
             # Labels (Simplified)
             diff = future_price - current_price
+            
+            # Scale diff to "Points" to prevent vanishing gradients/outputs
+            # EURUSD 0.0001 -> 1.0
+            scaled_diff = diff * 10000.0
+            
             if diff > 0: label = 1
             elif diff < 0: label = 2
             else: label = 0
             
             self.y_cls.append(label)
-            self.y_reg.append(diff)
+            self.y_reg.append(scaled_diff)
             self.raw_prices.append((current_price, multiplier)) # Store tuple
 
     def __len__(self):
