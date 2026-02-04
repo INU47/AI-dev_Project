@@ -12,7 +12,7 @@
         "password": "123456",
         "database": "quant_db"
     },
-    "ai_mode": "CONSERVATIVE",
-    "exploration_rate": 0.0,
+    "ai_mode": "EXPLORER",
+    "exploration_rate": 0.2,
     "gemini_api_key": "AIzaSyANlX67pOl_tU5iAPIgQNPHKImOAlnhmHk"
 }

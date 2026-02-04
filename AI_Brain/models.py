@@ -17,7 +17,7 @@ class PatternCNN(nn.Module):
         self.flatten_dim = 64 * 8 * 8
         self.fc1 = nn.Linear(self.flatten_dim, 128)
         self.dropout = nn.Dropout(0.5) # Prevent Overfitting
-        self.fc2 = nn.Linear(128, 3) 
+        self.fc2 = nn.Linear(128, 10) 
 
     def forward(self, x):
         # Layer 1

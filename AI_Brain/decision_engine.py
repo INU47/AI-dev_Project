@@ -34,9 +34,16 @@ class DecisionEngine:
         - EXPLORER: Entry on M1 IF confirmed by M5 OR H1.
         """
         pattern_names = {
-            1: "แรงซื้อสะสม / การทะลุแนวต้าน (Bullish Accumulation)",
-            2: "แรงขายกระจาย / การหลุดแนวรับ (Bearish Distribution)",
-            0: "การพักฐาน / ไซด์เวย์ (Consolidation/Neutral)"
+            0: "การพักฐาน / ไซด์เวย์ (Neutral/Consolidation)",
+            1: "แรงซื้อสะสม / ขาขึ้น (Bullish Momentum)",
+            2: "แรงขายกระจาย / ขาลง (Bearish Momentum)",
+            3: "Hammer (Bullish Pin Bar) - สัญญาณกลับตัวจากแนวรับ",
+            4: "Shooting Star (Bearish Pin Bar) - สัญญาณกลับตัวจากแนวต้าน",
+            5: "Bullish Engulfing - การกลืนกินขาขึ้น (Strong Buy Reversal)",
+            6: "Bearish Engulfing - การกลืนกินขาลง (Strong Sell Reversal)",
+            7: "Morning Star - การกลับตัวจากระดับต่ำสุด",
+            8: "Evening Star - การกลับตัวจากระดับสูงสุด",
+            9: "Doji - ตลาดลังเลใจ (Indecision / Pivot Point)"
         }
         
         results = {}
@@ -80,7 +87,8 @@ class DecisionEngine:
                 'analyst_metadata': analyst_data,
                 'raw_cnn_class': m1['class'],  # Pass to DB
                 'raw_lstm_trend': m1['trend'],
-                'raw_lstm_conf': lstm_conf # Now using calculated confidence
+                'raw_lstm_conf': lstm_conf, # Now using calculated confidence
+                'ai_mode': ai_mode
             }
 
         if m1:
@@ -95,13 +103,13 @@ class DecisionEngine:
                 bear_confirmed = True if not (m5 or h1) else ((m5['trend'] < 0 if m5 else False) or (h1['trend'] < 0 if h1 else False))
                 
                 # Confidence Threshold Relaxation
-                min_conf = 0.5 
+                min_conf = 0.6
             else:
                 # Conservative remains strict: needs ALL
                 if not (m5 and h1): return signal
                 bull_confirmed = (m5['trend'] > 0 and h1['trend'] > 0)
                 bear_confirmed = (m5['trend'] < 0 and h1['trend'] < 0)
-                min_conf = 0.65
+                min_conf = 0.6
 
             # Generate Report Components
             pattern_text = pattern_names.get(m1['class'], "Unknown")
@@ -129,7 +137,8 @@ class DecisionEngine:
                     'analyst_metadata': analyst_data,
                     'raw_cnn_class': m1['class'],  
                     'raw_lstm_trend': m1['trend'],
-                    'raw_lstm_conf': lstm_conf 
+                    'raw_lstm_conf': lstm_conf,
+                    'ai_mode': ai_mode
                 }
             elif is_bearish and bear_confirmed and m1['conf'] >= min_conf:
                 signal = {
@@ -139,7 +148,8 @@ class DecisionEngine:
                     'analyst_metadata': analyst_data,
                     'raw_cnn_class': m1['class'],  
                     'raw_lstm_trend': m1['trend'],
-                    'raw_lstm_conf': lstm_conf 
+                    'raw_lstm_conf': lstm_conf,
+                    'ai_mode': ai_mode
                 }
             else:
                 # Capture pattern detections even if no trade action is taken

@@ -21,8 +21,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("Trainer")
 
 # --- 1. Real Data Ingestion (MT5) ---
-# --- 1. Real Data Ingestion (MT5) ---
-def get_mt5_data(n_candles=150000, timeframe=mt5.TIMEFRAME_H1):
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+logger.info(f"Target Device: {device}")
+
+def get_mt5_data(n_candles=200000, timeframe=mt5.TIMEFRAME_H1):
     # Load Credentials
     config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Config', 'mt5_config.json')
     if not os.path.exists(config_path):
@@ -83,6 +85,64 @@ class QuantDataset(Dataset):
         
         self._prepare_data()
 
+    def _detect_pattern(self, window_feat):
+        """
+        Detects specific candlestick patterns in the LAST candle of the window.
+        Returns label (0-9)
+        """
+        if len(window_feat) < 2: return 0
+        
+        # Get last 2 candles
+        curr = window_feat[-1] # o, h, l, c, v
+        prev = window_feat[-2]
+        
+        o, h, l, c, v = curr
+        po, ph, pl, pc, pv = prev
+        
+        body = abs(c - o)
+        full_range = h - l if (h - l) > 0 else 0.0001
+        upper_shadow = h - max(o, c)
+        lower_shadow = min(o, c) - l
+        
+        # 9: Doji (Indecision)
+        if body <= 0.1 * full_range:
+            return 9
+            
+        # 3: Hammer (Bullish Pin Bar)
+        if lower_shadow >= 2 * body and upper_shadow <= 0.2 * full_range:
+            return 3
+            
+        # 4: Shooting Star (Bearish Pin Bar)
+        if upper_shadow >= 2 * body and lower_shadow <= 0.2 * full_range:
+            return 4
+            
+        # 5: Bullish Engulfing
+        if c > o and pc < po and c > po and o < pc:
+            return 5
+            
+        # 6: Bearish Engulfing
+        if c < o and pc > po and c < po and o > pc:
+            return 6
+            
+        # Reversal Stars (Needs 3 bars)
+        if len(window_feat) >= 3:
+            prev2 = window_feat[-3]
+            p2o, p2h, p2l, p2c, p2v = prev2
+            
+            # 7: Morning Star (Reversal Bull)
+            if p2c < p2o and abs(pc - po) < 0.3 * abs(p2c - p2o) and c > o and c > (p2c + p2o)/2:
+                return 7
+            
+            # 8: Evening Star (Reversal Bear)
+            if p2c > p2o and abs(pc - po) < 0.3 * abs(p2c - p2o) and c < o and c < (p2c + p2o)/2:
+                return 8
+
+        # Fallback to general direction
+        if c > o: return 1 # Bullish Momentum
+        if c < o: return 2 # Bearish Momentum
+        
+        return 0 # Neutral
+
     def _prepare_data(self):
         # Extract features for LSTM
         # MT5 columns: time, open, high, low, close, tick_volume, spread, real_volume
@@ -137,16 +197,13 @@ class QuantDataset(Dataset):
             seq = (window_feat - min_vals) / range_vals
             self.X_seq.append(seq) # [32, 5]
             
-            # Labels (Simplified)
+            # Labels (Advanced Pattern Recognition)
+            # Use pattern detection on the current window
+            label = self._detect_pattern(window_feat)
+            
             diff = future_price - current_price
-            
             # Scale diff to "Points" to prevent vanishing gradients/outputs
-            # EURUSD 0.0001 -> 1.0
-            scaled_diff = diff * 10000.0
-            
-            if diff > 0: label = 1
-            elif diff < 0: label = 2
-            else: label = 0
+            scaled_diff = diff * 100000.0
             
             self.y_cls.append(label)
             self.y_reg.append(scaled_diff)
@@ -185,8 +242,8 @@ class Backtester:
             price, multiplier = val_dataset.raw_prices[i]
             
             # Inference
-            gaf = gaf.unsqueeze(0) # [1, 1, 32, 32]
-            seq = seq.unsqueeze(0) # [1, 32, 5]
+            gaf = gaf.unsqueeze(0).to(device) # [1, 1, 32, 32]
+            seq = seq.unsqueeze(0).to(device) # [1, 32, 5]
             
             logits = model_cnn(gaf)
             probs = torch.softmax(logits, dim=1)
@@ -201,9 +258,11 @@ class Backtester:
             # Logic
             signal = "HOLD"
             # Strong Signal Logic (Rely on CNN primarily for this test)
-            if pred_cls == 1 and conf.item() > 0.5:
+            # Labels: 1=Bull, 3=Hammer, 5=BullEngulf, 7=MorningStar
+            if pred_cls in [1, 3, 5, 7] and conf.item() > 0.5:
                 signal = "BUY"
-            elif pred_cls == 2 and conf.item() > 0.5:
+            # Labels: 2=Bear, 4=Star, 6=BearEngulf, 8=EveningStar
+            elif pred_cls in [2, 4, 6, 8] and conf.item() > 0.5:
                 signal = "SELL"
             
             # Execution Simulation (Simple)
@@ -325,12 +384,18 @@ def train_and_backtest():
     # Validate with Batch=1 for accurate backtesting sequence
     val_dataset = QuantDataset(val_df, window_size=WINDOW_SIZE) 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    # Calculate Class Weights to handle Imbalance
+    all_labels = [y for y in train_dataset.y_cls]
+    class_counts = np.bincount(all_labels, minlength=10)
+    # Avoid div by zero
+    weights = 1.0 / (class_counts + 1e-6)
+    weights = torch.tensor(weights, dtype=torch.float32).to(device)
     
     # Models (Input=5)
-    cnn = PatternCNN()
-    lstm = TrendLSTM(input_size=5, hidden_size=64, dropout=0.3)
+    cnn = PatternCNN().to(device)
+    lstm = TrendLSTM(input_size=5, hidden_size=64, dropout=0.3).to(device)
     
-    criterion_cls = nn.CrossEntropyLoss()
+    criterion_cls = nn.CrossEntropyLoss(weight=weights)
     criterion_reg = nn.MSELoss()
     optimizer_cnn = optim.Adam(cnn.parameters(), lr=LR)
     optimizer_lstm = optim.Adam(lstm.parameters(), lr=LR)
@@ -340,6 +405,9 @@ def train_and_backtest():
         cnn.train(); lstm.train()
         total_loss = 0
         for gaf, seq, l_cls, l_reg in train_loader:
+            gaf, seq = gaf.to(device), seq.to(device)
+            l_cls, l_reg = l_cls.to(device), l_reg.to(device)
+            
             optimizer_cnn.zero_grad(); optimizer_lstm.zero_grad()
             
             loss = criterion_cls(cnn(gaf), l_cls) + criterion_reg(lstm(seq).squeeze(), l_reg)
@@ -348,7 +416,8 @@ def train_and_backtest():
             optimizer_cnn.step(); optimizer_lstm.step()
             total_loss += loss.item()
         
-        logger.info(f"Epoch {epoch+1}: Loss {total_loss/len(train_loader):.4f}")
+        if (epoch + 1) % 5 == 0 or epoch == 0:
+            logger.info(f"Epoch {epoch+1}: Loss {total_loss/len(train_loader):.4f}")
         
     torch.save(cnn.state_dict(), "AI_Brain/weights/cnn_model.pt")
     torch.save(lstm.state_dict(), "AI_Brain/weights/lstm_model.pt")
@@ -488,5 +557,5 @@ def train_rl_mode(experiences, epochs=10, lr=0.0001):
     logger.info("RL Training Complete. Weights updated.")
 
 if __name__ == "__main__":
-    # train_and_backtest() 
-    run_backtest_only()
+    train_and_backtest() 
+    # run_backtest_only()

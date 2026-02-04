@@ -150,6 +150,7 @@ class DBHandler:
             raw_pattern = signal_data.get('raw_cnn_class', 0)
             raw_trend = signal_data.get('raw_lstm_trend', 0.0)
             raw_conf = signal_data.get('raw_lstm_conf', 0.0)
+            ai_mode = signal_data.get('ai_mode', 'CONSERVATIVE')  # Get actual mode
             
             async with self.pool.acquire() as conn:
                 row = await conn.fetchrow(query, 
@@ -157,7 +158,7 @@ class DBHandler:
                                           action, 
                                           float(price), 
                                           float(lot_size),
-                                          "CONSERVATIVE", # Or pass from signal_data
+                                          ai_mode,  # Use actual mode instead of hardcoded
                                           str(raw_pattern),
                                           float(signal_data.get('confidence', 0.0)),
                                           float(raw_trend),

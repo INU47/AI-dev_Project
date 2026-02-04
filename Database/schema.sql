@@ -2,8 +2,6 @@
 -- Optimized for Reinforcement Learning (RL)
 
 -- 1. Drop Old Tables (As requested)
-DROP TABLE IF EXISTS market_candles;
-DROP TABLE IF EXISTS trade_logs;
 
 -- 2. Create Tables
 

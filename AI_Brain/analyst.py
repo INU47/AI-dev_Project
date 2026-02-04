@@ -66,15 +66,32 @@ class VirtualAnalyst:
             *ใช้ภาษาเป็นกันเองแต่ดูเป็นมืออาชีพ ไม่เวิ่นเว้อ*
             """
 
+
         try:
-            # google-genai SDK uses client.models.generate_content
+            # google-genai SDK v2 syntax
+            # Model name format: "models/gemini-1.5-flash" or just "gemini-1.5-flash"
             response = self.client.models.generate_content(
-                model=self.model_name,
+                model=f"models/{self.model_name}" if not self.model_name.startswith("models/") else self.model_name,
                 contents=prompt
             )
             return response.text
         except Exception as e:
             err_msg = str(e)
+            
+            # Check for specific error types
+            if "404" in err_msg or "NOT_FOUND" in err_msg:
+                logger.error(f"Model not found. Trying fallback model. Error: {e}")
+                # Try with a different model format
+                try:
+                    response = self.client.models.generate_content(
+                        model="gemini-1.5-flash-latest",
+                        contents=prompt
+                    )
+                    return response.text
+                except Exception as fallback_error:
+                    logger.error(f"Fallback also failed: {fallback_error}")
+                    return "⚠️ [Analyst Error] โมเดล AI ไม่พร้อมใช้งาน กรุณาตรวจสอบ API key และชื่อโมเดล"
+            
             if "429" in err_msg or "quota" in err_msg.lower():
                 logger.warning("Gemini API Quota Exceeded. Analyst is silent.")
                 return "⏸️ [Analyst Sleep] เกินขีดจำกัดการใช้งานฟรี (Quota Exceeded) ระบบจะกลับมาทำงานอัตโนมัติเมื่อครบกำหนดเวลาครับ"
